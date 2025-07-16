@@ -4,7 +4,7 @@ TARGET_GROUP_ID=-1002584251275
 
 AITUNNEL_MODEL=gpt-4o-search-preview
 AITUNNEL_TRANSCRIBE=whisper-1
-AITUNNEL_API_URL=https://api.aitunnel.ru/v1/chat/completions # URL для AITUNNEL API
+AITUNNEL_API_URL=https://api.aitunnel.ru/v1/chat/completions
 HISTORY_LIMIT=20480
 
 STATE_FILE=temp.txt
