@@ -22,7 +22,7 @@ from telegram.ext import (
     ContextTypes,
     CallbackQueryHandler # Обработчик для нажатий на инлайн-кнопки
 )
-from telegram.constants import FileDownloadMethod
+# from telegram.constants import FileDownloadMethod # УДАЛЕНО
 
 
 # =====================================================================================
@@ -564,7 +564,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     # Скачиваем файл
     file = await context.bot.get_file(voice.file_id)
     file_path = f"voice_{voice.file_id}.ogg"
-    await file.download_to_drive(file_path, download_method=FileDownloadMethod.BYTEARRAY)
+    await file.download_to_drive(file_path)
 
     # Готовим запрос к AITUNNEL whisper-1
     aitunnel_url = config.get('AITUNNEL_TRANSCRIBE_URL', 'https://api.aitunnel.ru/v1/audio/transcriptions')
