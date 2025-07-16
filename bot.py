@@ -10,6 +10,11 @@ import re       # Для работы с регулярными выражени
 import sys      # Для управления системными функциями, в данном случае для завершения работы скрипта при критических ошибках
 import json     # Для работы с форматом JSON, в котором мы будем хранить состояние бота (роли и историю)
 import traceback # Для вывода полной информации об ошибках (стек вызовов)
+import asyncio
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 # Библиотека для работы с Telegram Bot API
 # Устанавливается через: pip install python-telegram-bot
@@ -482,6 +487,60 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception:
             pass
 
+async def send_to_aitunnel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обрабатывает команду /send.
+    Собирает историю и новые сообщения, отправляет их в AITUNNEL, получает ответ и сохраняет историю.
+    """
+    if OpenAI is None:
+        await update.message.reply_text("Модуль openai не установлен. Установите его: pip install openai")
+        return
+    chat_id = update.effective_chat.id
+    if chat_id != TARGET_GROUP_ID:
+        return
+    ensure_chat_state_exists(chat_id)
+    chat_state = bot_state['chats'][str(chat_id)]
+    history = chat_state.get('history', [])
+    current_batch_messages = context.chat_data.get('current_batch_messages', [])
+    if not current_batch_messages:
+        await update.message.reply_text("Нет новых сообщений для отправки в нейросеть.")
+        return
+    # Формируем список сообщений для AITUNNEL
+    messages_for_api = []
+    for msg in history:
+        if not msg.get('content'): continue
+        messages_for_api.append({"role": msg['role'], "content": msg['content']})
+    for msg in current_batch_messages:
+        if not msg.get('content'): continue
+        messages_for_api.append({"role": msg['role'], "content": msg['content']})
+    # Ограничиваем историю
+    if len(messages_for_api) > HISTORY_LIMIT:
+        messages_for_api = messages_for_api[-HISTORY_LIMIT:]
+    try:
+        client = OpenAI(api_key=AITUNNEL_API_KEY, base_url="https://api.aitunnel.ru/v1/")
+        loop = asyncio.get_event_loop()
+        # OpenAI SDK синхронный, поэтому используем run_in_executor
+        def do_request():
+            return client.chat.completions.create(
+                messages=messages_for_api,
+                model=AITUNNEL_MODEL,
+                max_tokens=2048
+            )
+        chat_result = await loop.run_in_executor(None, do_request)
+        ai_text = chat_result.choices[0].message.content.strip()
+        await update.message.reply_text(ai_text)
+        # Сохраняем в историю
+        chat_state['history'].extend(current_batch_messages)
+        chat_state['history'].append({'role': 'assistant', 'content': ai_text})
+        if len(chat_state['history']) > HISTORY_LIMIT:
+            chat_state['history'] = chat_state['history'][-HISTORY_LIMIT:]
+        context.chat_data['current_batch_messages'] = []
+        save_state(STATE_FILE)
+        logger.info(f"Ответ AITUNNEL отправлен и сохранён в истории.")
+    except Exception as e:
+        logger.error(f"Ошибка при обращении к AITUNNEL: {e}", exc_info=True)
+        await update.message.reply_text(f"Ошибка при обращении к AITUNNEL: {e}")
+
 
 # =====================================================================================
 # ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА БОТА
@@ -514,6 +573,9 @@ def main() -> None:
     # Обработчик для голосовых сообщений, которые только в целевой группе.
     # Вызывает функцию handle_voice_message().
     application.add_handler(MessageHandler(filters.VOICE & filters.Chat(chat_id=TARGET_GROUP_ID), handle_voice_message))
+
+    # Команда /send вызывает функцию send_to_aitunnel()
+    application.add_handler(CommandHandler("send", send_to_aitunnel))
 
     # --- Запуск бота ---
     logger.info("Бот запущен и готов к работе...")
