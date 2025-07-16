@@ -1,6 +1,6 @@
 TELEGRAM_BOT_TOKEN=7952629421:AAG6ycIEfMzD1LZT7efcQebXRNMvwt_Dtk0
 AITUNNEL_API_KEY=sk-aitunnel-RkdtWoeHthOEexZTNbl9J95t3WqNsxE0
-TARGET_GROUP_ID=-1002584251275 # Замените на реальный ID вашей группы (отрицательное число)
+TARGET_GROUP_ID=-1002584251275
 
 AITUNNEL_MODEL=gpt-4o-search-preview # Имя модели, например, gpt-3.5-turbo, gpt-4, или другая, поддерживаемая AITUNNEL
 AITUNNEL_TRANSCRIBE=whisper-1
