@@ -234,21 +234,17 @@ SYSTEM_PROMPT = load_system_prompt('prompt.txt')
 # --- Получение настроек из загруженной конфигурации ---
 try:
     TELEGRAM_BOT_TOKEN = config['TELEGRAM_BOT_TOKEN']
-    GOOGLE_API_KEY = config['GOOGLE_API_KEY']
     TARGET_GROUP_ID = int(config['TARGET_GROUP_ID'])
-    GEMINI_MODEL = config.get('GEMINI_MODEL', 'gemini-pro')
-    GEMINI_API_URL_TEMPLATE = config.get('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1/models/{model}:generateContent')
-    GEMINI_API_URL = GEMINI_API_URL_TEMPLATE.format(model=GEMINI_MODEL) # Подставляем имя модели в URL
+    AITUNNEL_API_KEY = config['AITUNNEL_API_KEY']
+    AITUNNEL_MODEL = config.get('AITUNNEL_MODEL', 'gpt-4o-search-preview')
+    AITUNNEL_API_URL = config.get('AITUNNEL_API_URL', 'https://api.aitunnel.ru/v1/chat/completions')
+    AITUNNEL_TRANSCRIBE = config.get('AITUNNEL_TRANSCRIBE', 'whisper-1')
     HISTORY_LIMIT = int(config.get('HISTORY_LIMIT', 20))
-    # Получаем имя файла состояния из конфига, по умолчанию 'temp.txt'
     STATE_FILE = config.get('STATE_FILE', 'temp.txt')
-
 except KeyError as e:
-    # Ошибка, если обязательный ключ отсутствует в conf.txt
     print(f"ERROR: Отсутствует обязательный параметр в файле конфигурации (conf.txt): {e}")
     sys.exit()
 except ValueError as e:
-    # Ошибка, если ID группы или лимит истории не являются числами
     print(f"ERROR: Некорректное значение параметра в файле конфигурации (conf.txt): {e}")
     sys.exit()
 
@@ -258,7 +254,6 @@ if not SYSTEM_PROMPT:
      sys.exit()
 
 # --- Загрузка состояния бота из файла при старте ---
-# Это ключевой момент для сохранения памяти между перезапусками
 load_state(STATE_FILE)
 
 
@@ -424,117 +419,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.chat_data['current_batch_messages'].append({'role': 'user', 'content': formatted_text})
     logger.info(f"Сообщение добавлено в буфер от пользователя {user_id}: {formatted_text}")
 
-async def send_to_gemini(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Обрабатывает команду /send.
-    Собирает историю из файла состояния, добавляет новые сообщения из буфера,
-    отправляет все в API нейросети, обрабатывает ответ и обновляет историю.
-    """
-    chat_id = update.effective_chat.id
-
-    if chat_id != TARGET_GROUP_ID:
-        return
-
-    ensure_chat_state_exists(chat_id)
-    chat_state = bot_state['chats'][str(chat_id)] # Получаем состояние конкретного чата
-
-    # Получаем историю из постоянного состояния и новые сообщения из временного буфера
-    history = chat_state.get('history', [])
-    current_batch_messages = context.chat_data.get('current_batch_messages', [])
-
-    if not current_batch_messages:
-        await update.message.reply_text("Нет новых сообщений для отправки в нейросеть.")
-        return
-
-    # --- Формируем тело запроса для API Google Gemini ---
-    messages_for_api_contents = []
-
-    # 1. Добавляем исторические сообщения
-    for msg in history:
-        if not msg.get('content'): continue
-        # Вне зависимости от нашей внутренней роли ('user' или 'assistant'),
-        # для API мы всегда отправляем сообщения с ролью 'user', а реальная "роль" (имя или ответ бота)
-        # находится внутри самого текста.
-        messages_for_api_contents.append({'role': 'user', 'parts': [{'text': msg['content']}]})
-
-    # 2. Добавляем новые сообщения из буфера
-    combined_batch_text = ""
-    if current_batch_messages:
-        valid_batch_messages = [msg['content'] for msg in current_batch_messages if msg.get('content')]
-        if valid_batch_messages:
-             combined_batch_text = "\n".join(valid_batch_messages)
-             # Добавляем весь батч как одно большое сообщение от 'user'
-             messages_for_api_contents.append({'role': 'user', 'parts': [{'text': combined_batch_text}]})
-
-    if not messages_for_api_contents:
-         await update.message.reply_text("Нечего отправлять в нейросеть (нет истории и новых сообщений).")
-         return
-
-    logger.info(f"Отправка {len(current_batch_messages)} новых сообщений и {len(history)} сообщений из истории в API...")
-
-    try:
-        api_url_with_key = f"{GEMINI_API_URL}?key={GOOGLE_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-
-        # Формируем полный payload для API
-        payload = {
-            "contents": messages_for_api_contents,
-            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]} if SYSTEM_PROMPT else None,
-            "generationConfig": { "temperature": 0.7 }
-        }
-        if payload.get("system_instruction") is None:
-            del payload["system_instruction"]
-
-        # Отправляем POST-запрос
-        response = requests.post(api_url_with_key, headers=headers, json=payload)
-        response.raise_for_status() # Вызовет ошибку, если код ответа 4xx или 5xx
-        response_data = response.json()
-
-        # --- Извлекаем текст ответа из JSON-структуры ответа Gemini ---
-        ai_text = "Не удалось получить ответ от нейросети." # Сообщение по умолчанию
-        if 'promptFeedback' in response_data and 'blockReason' in response_data['promptFeedback']:
-             ai_text = "Извините, ваш запрос был отклонен по соображениям безопасности."
-        elif 'candidates' in response_data and response_data['candidates']:
-            candidate = response_data['candidates'][0]
-            if 'content' in candidate and 'parts' in candidate['content'] and candidate['content']['parts']:
-                ai_text = candidate['content']['parts'][0].get('text', ai_text)
-            if candidate.get('finishReason') != 'STOP':
-                 logger.warning(f"Причина завершения ответа API: {candidate.get('finishReason')}")
-
-        # --- Обработка и отправка ответа ---
-        cleaned_ai_text = strip_markdown(ai_text)
-        if cleaned_ai_text and "Не удалось получить ответ" not in cleaned_ai_text:
-            await update.message.reply_text(cleaned_ai_text)
-        elif cleaned_ai_text: # Если это сообщение об ошибке
-            await update.message.reply_text(cleaned_ai_text)
-        else: # Если ответ стал пустым после очистки
-             logger.warning("Ответ нейросети стал пустым после очистки Markdown.")
-
-        # --- Обновляем постоянную историю в `bot_state` ---
-        messages_to_add_to_history = []
-        messages_to_add_to_history.extend(current_batch_messages) # Добавляем сообщения из батча
-        # Добавляем ответ нейросети, если он не является ошибкой или блокировкой
-        if ai_text and "соображениям безопасности" not in ai_text and "Не удалось получить ответ" not in ai_text:
-             messages_to_add_to_history.append({'role': 'assistant', 'content': ai_text}) # Сохраняем сырой ответ
-
-        chat_state['history'].extend(messages_to_add_to_history)
-        # Ограничиваем размер истории
-        if len(chat_state['history']) > HISTORY_LIMIT:
-             chat_state['history'] = chat_state['history'][-HISTORY_LIMIT:]
-
-        # Очищаем временный буфер сообщений
-        context.chat_data['current_batch_messages'] = []
-        # Сохраняем обновленное состояние в файл
-        save_state(STATE_FILE)
-        logger.info(f"Успешная обработка /send. Длина истории: {len(chat_state['history'])}.")
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ошибка API Google Gemini: {e}", exc_info=True)
-        await update.message.reply_text(f"Ошибка при обращении к API нейросети: {e}")
-    except Exception as e:
-        logger.error(f"Непредвиденная ошибка при обработке /send: {e}", exc_info=True)
-        await update.message.reply_text(f"Произошла непредвиденная ошибка: {e}")
-
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Обрабатывает голосовые сообщения (voice) Telegram:
@@ -567,7 +451,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     await file.download_to_drive(file_path)
 
     # Готовим запрос к AITUNNEL whisper-1
-    aitunnel_url = config.get('AITUNNEL_TRANSCRIBE_URL', 'https://api.aitunnel.ru/v1/audio/transcriptions')
+    aitunnel_url = 'https://api.aitunnel.ru/v1/audio/transcriptions'  # URL для транскрипции фиксирован
     aitunnel_key = config.get('AITUNNEL_API_KEY')
     aitunnel_model = config.get('AITUNNEL_TRANSCRIBE', 'whisper-1')
     headers = {"Authorization": f"Bearer {aitunnel_key}"}
@@ -616,8 +500,6 @@ def main() -> None:
 
     # Команда /role вызывает функцию role()
     application.add_handler(CommandHandler("role", role))
-    # Команда /send вызывает функцию send_to_gemini()
-    application.add_handler(CommandHandler("send", send_to_gemini))
     # Команда /clear вызывает функцию request_clear_confirmation()
     application.add_handler(CommandHandler("clear", request_clear_confirmation))
 
