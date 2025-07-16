@@ -507,15 +507,17 @@ async def send_to_aitunnel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     # Формируем список сообщений для AITUNNEL
     messages_for_api = []
+    if SYSTEM_PROMPT:
+        messages_for_api.append({"role": "system", "content": SYSTEM_PROMPT})
     for msg in history:
         if not msg.get('content'): continue
         messages_for_api.append({"role": msg['role'], "content": msg['content']})
     for msg in current_batch_messages:
         if not msg.get('content'): continue
         messages_for_api.append({"role": msg['role'], "content": msg['content']})
-    # Ограничиваем историю
-    if len(messages_for_api) > HISTORY_LIMIT:
-        messages_for_api = messages_for_api[-HISTORY_LIMIT:]
+    # Ограничиваем историю (без учёта system)
+    if len(messages_for_api) > HISTORY_LIMIT + 1:
+        messages_for_api = [messages_for_api[0]] + messages_for_api[-HISTORY_LIMIT:]
     try:
         client = OpenAI(api_key=AITUNNEL_API_KEY, base_url="https://api.aitunnel.ru/v1/")
         loop = asyncio.get_event_loop()
